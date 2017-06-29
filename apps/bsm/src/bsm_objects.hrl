@@ -1,12 +1,13 @@
 -record(entity, {
-    entity_id       :: integer(),
-    name            :: integer(),
-    type            :: string(),
-    severity        :: integer(),
-    service = []    :: list(),
-    event_id        :: integer(),
-    events = []     :: list(),
-    app_group = []  :: list()
+    entity_id       	:: integer(),
+    name            	:: string(),
+    type            	:: string(),
+    severity        	:: integer(),
+    service = []    	:: list(),
+    event_id        	:: integer(),
+    events = []     	:: list(),
+    app_group = []  	:: list(),
+    organization = []	:: list()
 }).
 
 -record(relation, {
