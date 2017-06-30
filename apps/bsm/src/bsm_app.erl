@@ -13,6 +13,7 @@
 %% Application callbacks
 -export([start_link/0, start/2, stop/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
+-export([get_entity/0, get_relation/0, entity/1, relation/1]).
 
 -define(SERVER, ?MODULE).
 -record(state, {}).
@@ -27,24 +28,11 @@ start_link() ->
 
 
 init([]) ->
-    Entity = #entity{},
-    Relation = #relation{},
-    Event = #event{},
-    Ent1 = {104583,
-            Entity#entity{  
-                    entity_id = 104583,
-                    name = "KSH",
-                    type = "service",
-                    severity = -1,
-                    service = [],
-                    event_id = 0,
-                    events = [],
-                    app_group = []
-                }
-            },
-    TabId = ets:new(entity, [set, named_table]),
-    ets:insert(entity, Ent1),
-    io:format("~n", ets:lookup(entity, 104583)),
+    entid  = ets:new(entid,  [set, named_table]),
+    evtid  = ets:new(evtid,  [set, named_table]),
+    reldst = ets:new(reldst, [bag, named_table]),
+    relsrc = ets:new(relsrc, [bag, named_table]),
+    %%ets:insert(entity, Ent1),
     {ok, #state{}}.
 
 start(_StartType, _StartArgs) ->
@@ -59,6 +47,21 @@ stop(_State) ->
 %% Internal functions
 %%====================================================================
 
+entity({Pid, Entity}) 	  -> gen_server:call(Pid, {add_ent, rec_entity(Entity)}).
+relation({Pid, Relation}) -> gen_server:call(Pid, {add_rel, rec_relation(Relation)}).
+
+handle_call({add_ent, RecEnt}, _From, State) ->
+    Reply = { 
+		ets:insert( entid, { RecEnt#entity.entity_id, RecEnt#entity{} } ), 
+		ets:insert( evtid, { RecEnt#entity.event_id, RecEnt#entity{} } ) 
+    	    },
+    {reply, Reply, State};
+handle_call({add_rel, Rec}, _From, State) ->
+    Reply = {
+                ets:insert( reldst, { Rec#relation.dst_id, Rec#relation.src_id, Rec#relation.attr } ),
+                ets:insert( relsrc, { Rec#relation.src_id, Rec#relation.dst_id, Rec#relation.attr } )
+            },
+    {reply, Reply, State};
 handle_call(_Request, _From, State) ->
     Reply = ok,
     {reply, Reply, State}.
@@ -75,6 +78,12 @@ terminate(_Reason, _State) ->
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
+
+rec_entity({EntId, Name, Type, Sev, Svc, EvtId, Events, AppGroup, Org}) ->
+	#entity{entity_id=EntId, name=Name, type=Type, severity=Sev, service=Svc, event_id=EvtId, events=Events, app_group=AppGroup, organization=Org}.
+
+rec_relation({Dst, Src, Attr}) ->
+	#relation{src_id=Src, dst_id=Dst, attr=Attr}.
 
 get_entity() ->
 	% {entity_id, name, type, severity, service, event_id, events, app_group, organization}
@@ -117,5 +126,68 @@ get_entity() ->
 		{104396, "Нет данных мониторинга очередей в течение 10 минут на {HOST.NAME}", "metric",	-1, [], 1000368, [], [], []},
 		{101224, "s-kssh", "node", -1, [], 100021, [], [], []},
 		{104334, "Накопление сообщений в очереди App.LNSI.PutBigData.REQUEST", metric, -1, [], 1000358, [], [], []},
-		{104274, "Накопление сообщений в очереди Adapter.LNSI.PutData.IN", "metric", -1, [], 1000354, [], [], []},
+		{104274, "Накопление сообщений в очереди Adapter.LNSI.PutData.IN", "metric", -1, [], 1000354, [], [], []}
+	].
+
+get_relation() ->
+	% {_source.dstId, _source.srcId, attr }
+	[
+		{103937, 104426, 0},
+		{104004, 101224, 0},
+		{103937, 101224, 0},
+		{103925, 101222, 0},
+		{103941, 104302, 0},
+		{103941, 104334, 0},
+		{103941, 104364, 0},
+		{103941, 104375, 0},
+		{103941, 104415, 0},
+		{103941, 104274, 0},
+		{103941, 104372, 0},
+		{103941, 104396, 0},
+		{103941, 104400, 0},
+		{103915, 104157, 0},
+		{103915, 104200, 0},
+		{103915, 104317, 0},
+		{103915, 104387, 0},
+		{103915, 104417, 0},
+		{103915, 104450, 0},
+		{103915, 104095, 0},
+		{103915, 104113, 0},
+		{103915, 104155, 0},
+		{103915, 104162, 0},
+		{103915, 104188, 0},
+		{103915, 104364, 0},
+		{103915, 104383, 0},
+		{103915, 104385, 0},
+		{103915, 104408, 0},
+		{103915, 104419, 0},
+		{103915, 104442, 0},
+		{103941, 104424, 0},
+		{103915, 104059, 0},
+		{103915, 104104, 0},
+		{103915, 104302, 0},
+		{103915, 104334, 0},
+		{103915, 104336, 0},
+		{103915, 104411, 0},
+		{103941, 101224, 0},
+		{103915, 104424, 0},
+		{103915, 104274, 0},
+		{103915, 104372, 0},
+		{103915, 104396, 0},
+		{103915, 104400, 0},
+		{103915, 104426, 0},
+		{103915, 101224, 0},
+		{103915, 104375, 0},
+		{103915, 104415, 0},
+		{101236, 101222, 0},
+		{104583, 103925, 0},
+		{104583, 104004, 0},
+		{104583, 103915, 0},
+		{104583, 103937, 0},
+		{104583, 103941, 0},
+		{104585, 103941, 0},
+		{185773, 101224, 0},
+		{101230, 101222, 0},
+		{185791, 101224, 0},
+		{185781, 101224, 0}
 	].
