@@ -1,23 +1,27 @@
 -record(entity, {
-    entity_id       	:: integer(),
+    entid               :: integer(),
     name            	:: string(),
     type            	:: string(),
     severity        	:: integer(),
+    evtid               :: integer(),
+    timestamp           :: string(),
     service = []    	:: list(),
-    event_id        	:: integer(),
+    color               :: string(),
+    img                 :: string(),
     events = []     	:: list(),
-    app_group = []  	:: list(),
+    appgroup = []       :: list(),
+    appid               :: integer(),
     organization = []	:: list()
 }).
 
 -record(relation, {
-    src_id          :: integer(),
-    dst_id          :: integer(),
+    srcid           :: integer(),
+    dstid           :: integer(),
     attr = 0        :: integer()
 }).
 
 -record(event, {
-    event_id        :: integer(),
+    evtid           :: integer(),
     alert_key       :: integer(),
     agent           :: string(),
     node            :: string(),
@@ -25,7 +29,8 @@
     summary         :: string(),
     severity        :: integer(),
     type            :: string(),
-    color           :: string(),
     occurance_ts    :: string(),
-    iteration_ts    :: string()
+    iteration_ts    :: string(),
+    color           :: string(),
+    srcid = 0       :: integer()
 }).
