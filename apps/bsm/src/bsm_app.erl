@@ -73,17 +73,23 @@ handle_cast({EtsName, Rec}, State) when Rec#event.type =:= "PROBLEM" ->
 		[ {_Id, Entity} | _T ] = ets:lookup(EtsName, Rec#event.evtid),
 		% Add Event to Events Array of entity
 		{_, Events} = allocate_event({Rec#event{}, Entity#entity.events}),
-		% Set max Severity to Entity's Severety field
-		NewEntity = Entity#entity{ 	severity = erlang:max(Entity#entity.severity, Rec#event.severity),
-						events = Events
-						},
+		% Get max severity attr from Events List
+		Severity = get_max_severity(Events),
+		% Get Image and Color attr 
+		{ Image, Color, NewEventType } = get_img_color(Entity#entity.type, Severity),
+		% Enreach Entity
+		NewEntity = Entity#entity{ 	severity	= Severity,
+									events		= Events,
+									img			= Image,
+									color		= Color
+									},
 		% Write NewEntity to ETS
 		add_entity(NewEntity),
 		% Make Event
-		NewEvent = #event{ node	= NewEntity#entity.name,
-				   summary = "Error reason " ++ NewEntity#entity.type ++": " ++ NewEntity#entity.name ++ " failed!",
-				   severity = Rec#event.severity,
-				   type = "PROBLEM"
+		NewEvent = #event{ 	node = NewEntity#entity.name,
+							summary = "Error reason " ++ NewEntity#entity.type ++": " ++ NewEntity#entity.name ++ " " ++ NewEventType,
+							severity = Severity,
+							type = NewEventType
 				},
 		Relations = ets:lookup(relsrc, NewEntity#entity.entid),
 		[ event({entid,NewEvent#event{ evtid = Dst, srcid = Src }}) || {Src, Dst, _Attr} <- Relations ],
@@ -91,18 +97,28 @@ handle_cast({EtsName, Rec}, State) when Rec#event.type =:= "PROBLEM" ->
 handle_cast({EtsName, Rec}, State) when Rec#event.type =:= "OK" ->
 		% Search for Entity by EventId
 		[ {_Id, Entity} | _T ] = ets:lookup(EtsName, Rec#event.evtid),
-		% Return Severity to original State
-		NewEntity = Entity#entity{ severity = -1 },
+		% Remove Event from Events Array of entity
+		{_, Events} = deallocate_event({Rec#event{}, Entity#entity.events}),
+		% Get max severity attr from Events List
+		Severity = get_max_severity(Events),
+		% Get Image and Color attr 
+		{ Image, Color, NewEventType } = get_img_color(Entity#entity.type, Severity),
+		% Enreach Entity
+		NewEntity = Entity#entity{ 	severity	= Severity,
+									events		= Events,
+									img			= Image,
+									color		= Color
+									},
 		% Write NewEntity to ETS
-		entity(NewEntity),
+		add_entity(NewEntity),
 		% Make Event
 		NewEvent = #event{ 	node			= NewEntity#entity.name,
-							summary			= "Error reason " ++ NewEntity#entity.type ++ " with msg: " ++ Rec#event.summary,
-							severity		= -1,
-							type			= "OK"
+							summary			= "Error reason " ++ NewEntity#entity.type ++ " " ++ NewEventType,
+							severity		= Severity,
+							type			= NewEventType
 						},
 		Relations = ets:lookup(relsrc, NewEntity#entity.entid),
-		[ event({entid,NewEvent#event{ evtid = Dst }}) || {_Src, Dst, _Attr} <- Relations ],
+		[ event({entid,NewEvent#event{ evtid = Dst, srcid = Src }}) || {Src, Dst, _Attr} <- Relations ],
     {noreply, State};
 handle_cast(_Msg, State) ->
     {noreply, State}.
@@ -128,33 +144,52 @@ add_relation(Relation) ->
         ets:insert( relsrc, { Rec#relation.srcid, Rec#relation.dstid, Rec#relation.attr } ).
 
 allocate_event({Event, EventsList}) ->
-	case lists:member(Event#event.srcid, [ SrcId || {event, _EvtId, _AlertKey, _Agent, _Node, _NodeAlias, _Summary, _Sev, _Type, _OccuranceTs, _IterationTs, _Color, SrcId} <- EventsList]) of
+	case lists:member(Event#event.srcid, [ Rec#event.srcid || Rec <- EventsList]) of
 		true	-> {exists, EventsList};
 		false	-> {ok, [Event|EventsList]}
 	end.
 deallocate_event({Event, EventsList}) ->
-	{ok, [ {event, EvtId, AlertKey, Agent, Node, NodeAlias, Summary, Sev, Type, OccuranceTs, IterationTs, Color, SrcId} || 
-			{event, EvtId, AlertKey, Agent, Node, NodeAlias, Summary, Sev, Type, OccuranceTs, IterationTs, Color, SrcId} <- EventsList,
-			Event#event.srcid =/= SrcId
-			]
-	}.
+	{ok, [ Rec#event{} || Rec <- EventsList, Event#event.srcid =/= Rec#event.srcid ]}.
 
+get_max_severity([]) 		 -> -1;
+get_max_severity(ListEvents) -> lists:max( [ Sev#event.severity || Sev <- ListEvents] ).
+
+get_img_color(EntityType, EntitySeverity) ->
+	case EntityType of
+		"service" 		-> ImageType = "BusinessService_";
+		"application"	-> ImageType = "ApplicationServer_";
+		"node" 			-> ImageType = "DataBaseServer_";
+		"metric"		-> ImageType = "Router_";
+		_ 				-> ImageType = ""
+	end,
+	case EntitySeverity of
+		5 -> Image = ImageType ++ "Critical.png", Color = "#F44336", _SevChar = "CRITICAL", EventType = "PROBLEM";
+		4 -> Image = ImageType ++ "Major.png", Color = "#FF9800", _SevChar = "MAJOR", EventType = "PROBLEM";
+		3 -> Image = ImageType ++ "Warning.png", Color = "#FFEB3B", _SevChar = "MINOR", EventType = "PROBLEM";
+		2 -> Image = ImageType ++ "Normal.png", Color = "#4CAF50", _SevChar = "WARNING", EventType = "OK";
+		1 -> Image = ImageType ++ "Normal.png", Color = "#4CAF50", _SevChar = "INFO", EventType = "OK";
+		_ -> Image = ImageType ++ "Normal.png", Color = "#4CAF50", _SevChar = "NORMAL", EventType = "OK"
+	end,
+	{ Image, Color, EventType }.
 
 rec_entity({EntId, Name, Type, Sev, EvtId}) ->
+	{ Image, Color, _EventType } = get_img_color(Type, Sev),
 	#entity{ entid			= EntId,
              name           = Name,
              type           = Type,
              severity       = Sev,
-             evtid			= EvtId
+             evtid			= EvtId,
+			 img			= Image,
+			 color			= Color
              };
 rec_entity({entity, EntId, Name, Type, Sev, EvtId, Ts, Svc, Color, Img, Events, AppGroup, AppId, Org }) ->
 	#entity{ entid			= EntId,
              name           = Name,
              type           = Type,
              severity       = Sev,
-             evtid	    = EvtId,
-	     timestamp	    = Ts,
-	     service        = Svc,
+             evtid			= EvtId,
+			 timestamp	    = Ts,
+			 service        = Svc,
 			 color			= Color,
 			 img			= Img,
 			 events			= Events,
