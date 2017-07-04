@@ -13,7 +13,7 @@
 %% Application callbacks
 -export([start_link/0, start/2, stop/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
--export([entity/1, relation/1, event/1, fill_ets/0, snd_event/0, rec_entity/1, rec_event/1, allocate_event/1, deallocate_event/1]).
+-export([entity/1, relation/1, event/1, fill_ets/0, snd_event/0, rec_entity/1, rec_event/1, allocate_event/1, deallocate_event/1, dev/0]).
 
 -define(SERVER, ?MODULE).
 -record(state, {}).
@@ -37,6 +37,12 @@ init([]) ->
 start(_StartType, _StartArgs) ->
     bsm_sup:start_link().
 
+dev() ->
+   start_link(),
+   fill_ets(),
+   sys:trace(bsm_app, true),
+   snd_event().
+
 %%--------------------------------------------------------------------
 
 stop(_State) ->
@@ -46,8 +52,8 @@ stop(_State) ->
 %% Internal functions
 %%====================================================================
 
-entity(Entity) 	  -> gen_server:cast(bsm_app, {add_ent, rec_entity(Entity)}).
-relation(Relation) -> gen_server:cast(bsm_app, {add_rel, rec_relation(Relation)}).
+entity(Entity) 	  -> gen_server:cast(bsm_app, {add_ent, Entity}).
+relation(Relation) -> gen_server:cast(bsm_app, {add_rel, Relation}).
 event({EtsName, Event}) -> gen_server:cast(bsm_app, {EtsName, rec_event(Event)}).
 
 
@@ -56,13 +62,11 @@ handle_call(_Request, _From, State) ->
     {reply, Reply, State}.
 
 
-handle_cast({add_ent, Rec}, State) ->
-		ets:insert( entid, { Rec#entity.entid, Rec#entity{} } ), 
-		ets:insert( evtid, { Rec#entity.evtid, Rec#entity{} } ), 
+handle_cast({add_ent, Entity}, State) ->
+	add_entity(Entity),
     {noreply, State};
-handle_cast({add_rel, Rec}, State) ->
-        ets:insert( reldst, { Rec#relation.dstid, Rec#relation.srcid, Rec#relation.attr } ),
-    	ets:insert( relsrc, { Rec#relation.srcid, Rec#relation.dstid, Rec#relation.attr } ),
+handle_cast({add_rel, Relation}, State) ->
+	add_relation(Relation),
     {noreply, State};
 handle_cast({EtsName, Rec}, State) when Rec#event.type =:= "PROBLEM" ->
 		% Search for Entity by EventId
@@ -71,18 +75,18 @@ handle_cast({EtsName, Rec}, State) when Rec#event.type =:= "PROBLEM" ->
 		{_, Events} = allocate_event({Rec#event{}, Entity#entity.events}),
 		% Set max Severity to Entity's Severety field
 		NewEntity = Entity#entity{ 	severity = erlang:max(Entity#entity.severity, Rec#event.severity),
-									events = Events
-									},
-		% Write NewEntity to ETS
-		entity(NewEntity),
-		% Make Event
-		NewEvent = #event{ 	node			= NewEntity#entity.name,
-							summary			= "Error reason " ++ NewEntity#entity.type ++": " ++ NewEntity#entity.name ++ " failed!",
-							severity		= Rec#event.severity,
-							type			= "PROBLEM"
+						events = Events
 						},
+		% Write NewEntity to ETS
+		add_entity(NewEntity),
+		% Make Event
+		NewEvent = #event{ node	= NewEntity#entity.name,
+				   summary = "Error reason " ++ NewEntity#entity.type ++": " ++ NewEntity#entity.name ++ " failed!",
+				   severity = Rec#event.severity,
+				   type = "PROBLEM"
+				},
 		Relations = ets:lookup(relsrc, NewEntity#entity.entid),
-		[ event({entid,NewEvent#event{ evtid = Dst, srcid = Rec#event.srcid }}) || {_Src, Dst, _Attr} <- Relations ],
+		[ event({entid,NewEvent#event{ evtid = Dst, srcid = Src }}) || {Src, Dst, _Attr} <- Relations ],
     {noreply, State};
 handle_cast({EtsName, Rec}, State) when Rec#event.type =:= "OK" ->
 		% Search for Entity by EventId
@@ -113,6 +117,15 @@ code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
 
+add_entity(Entity) ->
+	Rec = rec_entity(Entity),
+	ets:insert( entid, { Rec#entity.entid, Rec#entity{} } ),
+        ets:insert( evtid, { Rec#entity.evtid, Rec#entity{} } ).
+
+add_relation(Relation) ->
+	Rec = rec_relation(Relation),
+	ets:insert( reldst, { Rec#relation.dstid, Rec#relation.srcid, Rec#relation.attr } ),
+        ets:insert( relsrc, { Rec#relation.srcid, Rec#relation.dstid, Rec#relation.attr } ).
 
 allocate_event({Event, EventsList}) ->
 	case lists:member(Event#event.srcid, [ SrcId || {event, _EvtId, _AlertKey, _Agent, _Node, _NodeAlias, _Summary, _Sev, _Type, _OccuranceTs, _IterationTs, _Color, SrcId} <- EventsList]) of
@@ -139,9 +152,9 @@ rec_entity({entity, EntId, Name, Type, Sev, EvtId, Ts, Svc, Color, Img, Events, 
              name           = Name,
              type           = Type,
              severity       = Sev,
-             evtid			= EvtId,
-			 timestamp		= Ts,
-			 service		= Svc,
+             evtid	    = EvtId,
+	     timestamp	    = Ts,
+	     service        = Svc,
 			 color			= Color,
 			 img			= Img,
 			 events			= Events,
@@ -166,8 +179,7 @@ rec_event({EvtId, AlertKey, Agent, Node, NodeAlias, Summary, Sev, Type, Occuranc
 			severity		= Sev,
 			type			= Type,
 			occurance_ts	= OccuranceTs,
-			iteration_ts	= IterationTs,
-			srcid			= EvtId			%% If event send from external source, then srcid equal evtid, because it first BSM iteration
+			iteration_ts	= IterationTs
 			};
 rec_event({event, EvtId, AlertKey, Agent, Node, NodeAlias, Summary, Sev, Type, OccuranceTs, IterationTs, Color, SrcId}) ->
     #event{ evtid			= EvtId,
@@ -307,6 +319,6 @@ get_event() ->
 	% {EvtId, AlertKey, Agent, Node, NodeAlias, Summary, Sev, Type, OccuranceTs, IterationTs}
     [
         {1000375, 375, "zabbix", "s-kssh", "s-kssh", "Проблема с Srv.RezDataLoading.ERROR", 5, "PROBLEM", "2017-06-26T07:09:42", "2017-06-26T07:09:42"},
-		{1000349, 375, "zabbix", "s-kssh", "s-kssh", "Накопление сообщений в очереди Adapter.IAO.DBWrite.TECH.ERROR", 5, "PROBLEM", "2017-06-26T07:09:42", "2017-06-26T07:09:42"}
-		%%{1000353, 375, "zabbix", "s-kssh", "s-kssh", "Накопление сообщений в очереди Adapter.LNSI.GetData.ERROR", 5, "PROBLEM", "2017-06-26T07:09:42", "2017-06-26T07:09:42"}
+	{1000349, 349, "zabbix", "s-kssh", "s-kssh", "Накопление сообщений в очереди Adapter.IAO.DBWrite.TECH.ERROR", 5, "PROBLEM", "2017-06-26T07:09:42", "2017-06-26T07:09:42"},
+	{1000353, 375, "zabbix", "s-kssh", "s-kssh", "Накопление сообщений в очереди Adapter.LNSI.GetData.ERROR", 5, "PROBLEM", "2017-06-26T07:09:42", "2017-06-26T07:09:42"}
     ].
