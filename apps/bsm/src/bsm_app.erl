@@ -26,6 +26,9 @@
 start_link() ->
     gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
 
+start(_StartType, _StartArgs) ->
+    gen_server:start_link({local, ?SERVER}, ?MODULE, [], []),
+    bsm_sup:start_link().
 
 init([]) ->
     entid  = ets:new(entid,  [set, named_table]),
@@ -33,9 +36,6 @@ init([]) ->
     reldst = ets:new(reldst, [bag, named_table]),
     relsrc = ets:new(relsrc, [bag, named_table]),
     {ok, #state{}}.
-
-start(_StartType, _StartArgs) ->
-    bsm_sup:start_link().
 
 dev() ->
    start_link(),
@@ -54,7 +54,22 @@ stop(_State) ->
 
 entity(Entity) 	  -> gen_server:cast(bsm_app, {add_ent, Entity}).
 relation(Relation) -> gen_server:cast(bsm_app, {add_rel, Relation}).
-event({EtsName, Event}) -> gen_server:cast(bsm_app, {EtsName, rec_event(Event)}).
+
+-spec event({Direction :: direction_out | direction_in,
+	     EtsName   :: evtid | entid,
+	     Event     :: { EvtId :: integer(),
+			    AlertKey :: integer(),
+			    Agent ::  string(),
+			    Node :: string(),
+			    NodeAlias :: string(),
+			    Summary :: string(),
+			    Sev :: integer(),
+			    Type :: string(),
+			    OccuranceTs :: string(),
+			    IterationTs :: integer()
+			  }
+	    }) -> ok.
+event({Direction, EtsName, Event}) -> gen_server:cast(bsm_app, {Direction, EtsName, rec_event(Event)}).
 
 
 handle_call(_Request, _From, State) ->
@@ -68,7 +83,7 @@ handle_cast({add_ent, Entity}, State) ->
 handle_cast({add_rel, Relation}, State) ->
 	add_relation(Relation),
     {noreply, State};
-handle_cast({EtsName, Rec}, State) when Rec#event.type =:= "PROBLEM" ->
+handle_cast({direction_out, EtsName, Rec}, State) when Rec#event.type =:= "PROBLEM" ->
 		% Search for Entity by EventId
 		[ {_Id, Entity} | _T ] = ets:lookup(EtsName, Rec#event.evtid),
 		% Add Event to Events Array of entity
@@ -78,23 +93,23 @@ handle_cast({EtsName, Rec}, State) when Rec#event.type =:= "PROBLEM" ->
 		% Get Image and Color attr 
 		{ Image, Color, NewEventType } = get_img_color(Entity#entity.type, Severity),
 		% Enreach Entity
-		NewEntity = Entity#entity{ 	severity	= Severity,
-									events		= Events,
-									img			= Image,
-									color		= Color
-									},
+		NewEntity = Entity#entity{ severity = Severity,
+					   events = Events,
+					   img = Image,
+					   color = Color
+					 },
 		% Write NewEntity to ETS
 		add_entity(NewEntity),
 		% Make Event
-		NewEvent = #event{ 	node = NewEntity#entity.name,
-							summary = "Error reason " ++ NewEntity#entity.type ++": " ++ NewEntity#entity.name ++ " " ++ NewEventType,
-							severity = Severity,
-							type = NewEventType
+		NewEvent = #event{ node = NewEntity#entity.name,
+				   summary = "Error reason " ++ NewEntity#entity.type ++": " ++ NewEntity#entity.name ++ " " ++ NewEventType,
+				   severity = Severity,
+				   type = NewEventType
 				},
 		Relations = ets:lookup(relsrc, NewEntity#entity.entid),
-		[ event({entid,NewEvent#event{ evtid = Dst, srcid = Src }}) || {Src, Dst, _Attr} <- Relations ],
+		[ event({direction_out, entid,NewEvent#event{ evtid = Dst, srcid = Src }}) || {Src, Dst, _Attr} <- Relations ],
     {noreply, State};
-handle_cast({EtsName, Rec}, State) when Rec#event.type =:= "OK" ->
+handle_cast({direction_out, EtsName, Rec}, State) when Rec#event.type =:= "OK" ->
 		% Search for Entity by EventId
 		[ {_Id, Entity} | _T ] = ets:lookup(EtsName, Rec#event.evtid),
 		% Remove Event from Events Array of entity
@@ -104,21 +119,21 @@ handle_cast({EtsName, Rec}, State) when Rec#event.type =:= "OK" ->
 		% Get Image and Color attr 
 		{ Image, Color, NewEventType } = get_img_color(Entity#entity.type, Severity),
 		% Enreach Entity
-		NewEntity = Entity#entity{ 	severity	= Severity,
-									events		= Events,
-									img			= Image,
-									color		= Color
-									},
+		NewEntity = Entity#entity{ severity = Severity,
+					   events = Events,
+					   img = Image,
+					   color = Color
+					 },
 		% Write NewEntity to ETS
 		add_entity(NewEntity),
 		% Make Event
-		NewEvent = #event{ 	node			= NewEntity#entity.name,
-							summary			= "Error reason " ++ NewEntity#entity.type ++ " " ++ NewEventType,
-							severity		= Severity,
-							type			= NewEventType
-						},
+		NewEvent = #event{ node = NewEntity#entity.name,
+				   summary = "Error reason " ++ NewEntity#entity.type ++ " " ++ NewEventType,
+				   severity = Severity,
+			           type = NewEventType
+				 },
 		Relations = ets:lookup(relsrc, NewEntity#entity.entid),
-		[ event({entid,NewEvent#event{ evtid = Dst, srcid = Src }}) || {Src, Dst, _Attr} <- Relations ],
+		[ event({direction_out, entid, NewEvent#event{ evtid = Dst, srcid = Src }}) || {Src, Dst, _Attr} <- Relations ],
     {noreply, State};
 handle_cast(_Msg, State) ->
     {noreply, State}.
@@ -240,12 +255,13 @@ fill_ets() ->
     [ relation(Relation) || Relation <- get_relation()].
 
 snd_event() ->
-    [ event({evtid, Event}) || Event <- get_event()].
+    [ event({direction_out, evtid, Event}) || Event <- get_event()].
 
 get_entity() ->
 	% {entity_id, name, type, severity, service, event_id, events, app_group, organization}
 	% {entity_id, name, type, severity, event_id}
 	[
+		{100000, "CROC", "organization", -1, 0},
 		{104408, "Накопление сообщений в очереди SYSTEM.BROKER.AGGR.TIMEOUT", "metric",	-1, 1000366},
 		{103915, "s-kssh MQ", "application", -1, 100055},
 		{104383, "Накопление сообщений в очереди EVENT.LOGGING.REPEAT",	"metric", -1, 1000363},
@@ -347,7 +363,8 @@ get_relation() ->
 		{185773, 101224, 0},
 		{101230, 101222, 0},
 		{185791, 101224, 0},
-		{185781, 101224, 0}
+		{185781, 101224, 0},
+		{100000, 104583, 0}
 	].
 
 get_event() ->
