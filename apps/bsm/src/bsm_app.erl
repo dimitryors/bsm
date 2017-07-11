@@ -13,7 +13,7 @@
 %% Application callbacks
 -export([start_link/0, start/2, stop/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
--export([entity/1, relation/1, event/1, fill_ets/0, snd_event/0, rec_entity/1, rec_event/1, allocate_event/1, deallocate_event/1, dev/0]).
+-export([entity/1, relation/1, fill_ets/0, snd_event/0, rec_entity/1, rec_event/1, allocate_event/1, deallocate_event/1, dev/0, event_in/1,  event_out/1]).
 
 -define(SERVER, ?MODULE).
 -record(state, {}).
@@ -55,21 +55,8 @@ stop(_State) ->
 entity(Entity) 	  -> gen_server:cast(bsm_app, {add_ent, Entity}).
 relation(Relation) -> gen_server:cast(bsm_app, {add_rel, Relation}).
 
--spec event({Direction :: direction_out | direction_in,
-	     EtsName   :: evtid | entid,
-	     Event     :: { EvtId :: integer(),
-			    AlertKey :: integer(),
-			    Agent ::  string(),
-			    Node :: string(),
-			    NodeAlias :: string(),
-			    Summary :: string(),
-			    Sev :: integer(),
-			    Type :: string(),
-			    OccuranceTs :: string(),
-			    IterationTs :: integer()
-			  }
-	    }) -> ok.
-event({Direction, EtsName, Event}) -> gen_server:cast(bsm_app, {Direction, EtsName, rec_event(Event)}).
+event_out({EtsName, Event})	-> gen_server:cast(bsm_app, {direction_out, EtsName, rec_event(Event)}).
+event_in({ObjType}) 		-> gen_server:cast(bsm_app, {direction_in, ObjType}).
 
 
 handle_call(_Request, _From, State) ->
@@ -93,11 +80,11 @@ handle_cast({direction_out, EtsName, Rec}, State) when Rec#event.type =:= "PROBL
 		% Get Image and Color attr 
 		{ Image, Color, NewEventType } = get_img_color(Entity#entity.type, Severity),
 		% Enreach Entity
-		NewEntity = Entity#entity{ severity = Severity,
-					   events = Events,
-					   img = Image,
-					   color = Color
-					 },
+		NewEntity = Entity#entity{	severity	= Severity,
+									events		= Events,
+									img			= Image,
+									color		= Color
+									},
 		% Write NewEntity to ETS
 		add_entity(NewEntity),
 		% Make Event
@@ -107,7 +94,7 @@ handle_cast({direction_out, EtsName, Rec}, State) when Rec#event.type =:= "PROBL
 				   type = NewEventType
 				},
 		Relations = ets:lookup(relsrc, NewEntity#entity.entid),
-		[ event({direction_out, entid,NewEvent#event{ evtid = Dst, srcid = Src }}) || {Src, Dst, _Attr} <- Relations ],
+		[ event_out({entid,NewEvent#event{ evtid = Dst, srcid = Src }}) || {Src, Dst, _Attr} <- Relations ],
     {noreply, State};
 handle_cast({direction_out, EtsName, Rec}, State) when Rec#event.type =:= "OK" ->
 		% Search for Entity by EventId
@@ -130,10 +117,32 @@ handle_cast({direction_out, EtsName, Rec}, State) when Rec#event.type =:= "OK" -
 		NewEvent = #event{ node = NewEntity#entity.name,
 				   summary = "Error reason " ++ NewEntity#entity.type ++ " " ++ NewEventType,
 				   severity = Severity,
-			           type = NewEventType
+			       type = NewEventType
 				 },
 		Relations = ets:lookup(relsrc, NewEntity#entity.entid),
-		[ event({direction_out, entid, NewEvent#event{ evtid = Dst, srcid = Src }}) || {Src, Dst, _Attr} <- Relations ],
+		[ event_out({entid, NewEvent#event{ evtid = Dst, srcid = Src }}) || {Src, Dst, _Attr} <- Relations ],
+    {noreply, State};
+handle_cast({direction_in, ObjType}, State) when ObjType =:= "organization" ->
+	% Get entid by type "organization"
+	EntityList = ets:match(entid, {'_', #entity{type			= ObjType,
+												entid			= '$0',
+												name			= '$1',
+												severity		= '_',
+												evtid			= '_',
+	 											timestamp		= '_',
+												service			= '_',
+												color			= '_',
+												img				= '_',
+												events			= '_',
+												appgroup		= '_',
+												appid			= '_',
+												organization	= '$2'
+												}
+			 						}),
+	% io:format("error clause ~n", OrgArray),
+	enreach_organization(EntityList),
+	% Add OrganizationName to Organization Array
+	% Lookup for entid graph src
     {noreply, State};
 handle_cast(_Msg, State) ->
     {noreply, State}.
@@ -148,10 +157,20 @@ code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
 
+
+enreach_organization([]) -> ok;
+enreach_organization([Org | EntityTail]) ->
+	[EntId, OrgName, OrgList] = Org,
+	OrgAllocated = allocate_organization({OrgName, OrgList}),
+	[ {_Id, Rec} ] = ets:lookup(entid, EntId),
+	add_entity(Rec#entity{ organization = OrgAllocated }),
+	enreach_organization(EntityTail).
+
+
 add_entity(Entity) ->
 	Rec = rec_entity(Entity),
 	ets:insert( entid, { Rec#entity.entid, Rec#entity{} } ),
-        ets:insert( evtid, { Rec#entity.evtid, Rec#entity{} } ).
+    ets:insert( evtid, { Rec#entity.evtid, Rec#entity{} } ).
 
 add_relation(Relation) ->
 	Rec = rec_relation(Relation),
@@ -165,6 +184,15 @@ allocate_event({Event, EventsList}) ->
 	end.
 deallocate_event({Event, EventsList}) ->
 	{ok, [ Rec#event{} || Rec <- EventsList, Event#event.srcid =/= Rec#event.srcid ]}.
+
+allocate_organization({OrgName, OrgList}) ->
+	case lists:member(OrgName, OrgList) of
+		true	-> OrgList;
+		false	-> [OrgName|OrgList]
+	end.
+% deallocate_organization({OrgName, OrgList}) ->
+% 	{ok, [ Val || Val <- OrgList, OrgName =/= Val ]}.
+
 
 get_max_severity([]) 		 -> -1;
 get_max_severity(ListEvents) -> lists:max( [ Sev#event.severity || Sev <- ListEvents] ).
@@ -211,6 +239,12 @@ rec_entity({entity, EntId, Name, Type, Sev, EvtId, Ts, Svc, Color, Img, Events, 
 			 appgroup		= AppGroup,
 			 appid			= AppId,
 			 organization	= Org
+             };
+rec_entity({Type, EntId, Name, Org}) when Type =:= "organization" ->
+	#entity{ entid			= EntId,
+             name           = Name,
+             type           = Type,
+			 organization	= Org
              }.
 
 rec_relation({Dst, Src, Attr}) ->
@@ -255,13 +289,14 @@ fill_ets() ->
     [ relation(Relation) || Relation <- get_relation()].
 
 snd_event() ->
-    [ event({direction_out, evtid, Event}) || Event <- get_event()].
+    [ event_out({evtid, Event}) || Event <- get_event()].
 
 get_entity() ->
 	% {entity_id, name, type, severity, service, event_id, events, app_group, organization}
 	% {entity_id, name, type, severity, event_id}
 	[
-		{100000, "CROC", "organization", -1, 0},
+		{100000, "ORG1", "organization", -1, 0},
+		{100001, "ORG2", "organization", -1, 0},
 		{104408, "Накопление сообщений в очереди SYSTEM.BROKER.AGGR.TIMEOUT", "metric",	-1, 1000366},
 		{103915, "s-kssh MQ", "application", -1, 100055},
 		{104383, "Накопление сообщений в очереди EVENT.LOGGING.REPEAT",	"metric", -1, 1000363},
@@ -364,7 +399,8 @@ get_relation() ->
 		{101230, 101222, 0},
 		{185791, 101224, 0},
 		{185781, 101224, 0},
-		{100000, 104583, 0}
+		{100000, 104583, 0},
+		{100001, 104583, 0}
 	].
 
 get_event() ->
