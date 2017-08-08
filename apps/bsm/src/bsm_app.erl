@@ -37,6 +37,7 @@ init([]) ->
     relsrc = ets:new(relsrc, [bag, named_table]),
     {ok, #state{}}.
 
+%%--------------------------------------------------------------------
 dev() ->
    start_link(),
    fill_ets(),
@@ -45,6 +46,13 @@ dev() ->
    event_in({"service"}),
    snd_event().
 
+fill_ets() ->
+    [ entity(Entity)     || Entity   <- get_entity()],
+    [ relation(Relation) || Relation <- get_relation()].
+
+snd_event() ->
+	[ event_out({evtid, Event}) || Event <- get_event()].
+	
 %%--------------------------------------------------------------------
 
 stop(_State) ->
@@ -73,63 +81,14 @@ handle_cast({add_ent, Entity}, State) ->
 handle_cast({add_rel, Relation}, State) ->
 	add_relation(Relation),
     {noreply, State};
-handle_cast({direction_out, EtsName, Rec}, State) when Rec#event.type =:= "PROBLEM" ->
-		% Search for Entity by EventId
-		[ {_Id, Entity} | _T ] = ets:lookup(EtsName, Rec#event.evtid),
-		% Add Event to Events Array of entity
-		{_, Events} = allocate_event({Rec#event{}, Entity#entity.events}),
-		% Get max severity attr from Events List
-		Severity = get_max_severity(Events),
-		% Get Image and Color attr 
-		{ Image, Color, NewEventType } = get_img_color(Entity#entity.type, Severity),
-		% Enreach Entity
-		NewEntity = Entity#entity{	severity	= Severity,
-									events		= Events,
-									img			= Image,
-									color		= Color
-									},
-		% Write NewEntity to ETS
-		add_entity(NewEntity),
-		% Make Event
-		NewEvent = #event{	node = NewEntity#entity.name,
-							summary = "Error reason " ++ NewEntity#entity.type ++": " ++ NewEntity#entity.name ++ " " ++ NewEventType,
-							severity = Severity,
-							type = NewEventType
-							},
-		Relations = ets:lookup(relsrc, NewEntity#entity.entid),
-		[ event_out({entid,NewEvent#event{ evtid = Dst, srcid = Src }}) || {Src, Dst, _Attr} <- Relations ],
-    {noreply, State};
-handle_cast({direction_out, EtsName, Rec}, State) when Rec#event.type =:= "OK" ->
-		% Search for Entity by EventId
-		[ {_Id, Entity} | _T ] = ets:lookup(EtsName, Rec#event.evtid),
-		% Remove Event from Events Array of entity
-		{_, Events} = deallocate_event({Rec#event{}, Entity#entity.events}),
-		% Get max severity attr from Events List
-		Severity = get_max_severity(Events),
-		% Get Image and Color attr 
-		{ Image, Color, NewEventType } = get_img_color(Entity#entity.type, Severity),
-		% Enreach Entity
-		NewEntity = Entity#entity{ severity = Severity,
-					   events = Events,
-					   img = Image,
-					   color = Color
-					 },
-		% Write NewEntity to ETS
-		add_entity(NewEntity),
-		% Make Event
-		NewEvent = #event{ node = NewEntity#entity.name,
-				   summary = "Error reason " ++ NewEntity#entity.type ++ " " ++ NewEventType,
-				   severity = Severity,
-			       type = NewEventType
-				 },
-		Relations = ets:lookup(relsrc, NewEntity#entity.entid),
-		[ event_out({entid, NewEvent#event{ evtid = Dst, srcid = Src }}) || {Src, Dst, _Attr} <- Relations ],
+handle_cast({direction_out, EtsName, Rec}, State) ->
+	calc_entity_state({EtsName, Rec}),
     {noreply, State};
 handle_cast({direction_in, ObjType}, State) ->
-	enreach_enttype({ObjType}),
+	enreach_entity({ObjType}),
     {noreply, State};
 handle_cast({direction_in, ObjType, Event}, State) ->
-	enreach_enttype({ObjType, Event}),
+	enreach_entity({ObjType, Event}),
     {noreply, State};
 handle_cast(_Msg, State) ->
     {noreply, State}.
@@ -143,12 +102,52 @@ terminate(_Reason, _State) ->
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
+%-------------------------------------------------------------------------------
+% Calculate current Entity State and send event with changes next related entity
+%-------------------------------------------------------------------------------
+calc_entity_state({EtsName, Rec}) ->
+		% Search for Entity by EventId
+		case ets:lookup(EtsName, Rec#event.evtid) of
+			[ {_Id, Entity} | _T ] ->
+				% Add Event to Events Array of entity
+				{_, Events} = case Rec#event.type of
+									"PROBLEM" -> allocate_event({Rec#event{}, Entity#entity.events});
+									"OK"	  -> deallocate_event({Rec#event{}, Entity#entity.events})
+							  end,
+				% Get max severity attr from Events List
+				Severity = get_max_severity(Events),
+				% Get Image and Color attr 
+				{ Image, Color, NewEventType } = get_img_color(Entity#entity.type, Severity),
+				% Enreach Entity
+				NewEntity = Entity#entity{	severity	= Severity,
+											events		= Events,
+											img			= Image,
+											color		= Color
+											},
+				% Write NewEntity to ETS
+				add_entity(NewEntity),
 
+
+				% Make Event
+				NewEvent = #event{	node = NewEntity#entity.name,
+									summary = "Error reason " ++ NewEntity#entity.type ++": " ++ NewEntity#entity.name ++ " " ++ NewEventType,
+									severity = Severity,
+									type = NewEventType
+									},
+				% Get recipient
+				Relations = ets:lookup(relsrc, NewEntity#entity.entid),
+				% Get recipient
+				[ event_out({entid,NewEvent#event{ evtid = Dst, srcid = Src }}) 
+					|| 
+					{Src, Dst, _Attr} <- Relations 
+				];
+			[] -> {Rec#event.evtid, not_found}
+		end.
 %
 % Enreach #entity{ organization } or #entity{ service }
 %
 
-% -spec enreach_enttype(
+% -spec enreach_entity(
 % 	{ ObjType :: "organization" | "service" } 
 % 	|
 % 	{ ObjType :: "organization" | "service", Event :: #event{} }
@@ -157,8 +156,12 @@ code_change(_OldVsn, State, _Extra) ->
 % ) -> ok.
 
 
-enreach_enttype({ObjType}) when ObjType =:= "organization" ->
-	EntityList = ets:match(entid, {'_', #entity{	type = ObjType,
+%-------------------------------------------------------------------------------
+% Init all Entities with Type =:= "organization"
+%-------------------------------------------------------------------------------
+enreach_entity({ObjType}) when ObjType =:= "organization" ->
+	% Init all Entities with Type =:= "organization"
+	EntityList = ets:match(entid, {'_', #entity{	type			= ObjType,
 													entid			= '$0',
 													name			= '$1',
 													severity		= '_',
@@ -173,23 +176,14 @@ enreach_enttype({ObjType}) when ObjType =:= "organization" ->
 													organization	= '$2'
 												}
 									}),
-	enreach_enttype({ObjType, EntityList});
-enreach_enttype({ObjType, Event}) when ObjType =:= "organization", is_record(Event, event) =:= true ->
-	% Find Entity to change
-	[ {_Id, Entity} | _T ] = ets:lookup(entid, Event#event.evtid),
-	% Allocate Organization
-	OrgAllocated = allocate_enttype({Event#event.node, Entity#entity.organization}),
-	% Update Entity
-	add_entity( Entity#entity{ organization = OrgAllocated }),
-	% Create new event
-	NewEvent = #event{ node = Event#event.node },
-	% Find src entity's
-	Relations = ets:lookup(reldst, Entity#entity.entid),
-	% Snd event to src entity's
-	[ event_in({ObjType, NewEvent#event{ evtid = Src, srcid = Dst }}) || {Dst, Src, _Attr} <- Relations ],
-	ok;
-enreach_enttype({ObjType}) when ObjType =:= "service"->
-	EntityList = ets:match(entid, {'_', #entity{	type = ObjType,
+	% Process found EntityList with Type =:= "organization"
+	enreach_entity({ObjType, EntityList});
+%-------------------------------------------------------------------------------
+% Init all Entities with Type =:= "service"
+%-------------------------------------------------------------------------------
+enreach_entity({ObjType}) when ObjType =:= "service"->
+	% Init all Entities with Type =:= "service"
+	EntityList = ets:match(entid, {'_', #entity{	type			= ObjType,
 													entid			= '$0',
 													name			= '$1',
 													severity		= '_',
@@ -204,23 +198,16 @@ enreach_enttype({ObjType}) when ObjType =:= "service"->
 													organization	= '_'
 												}
 									}),
-	enreach_enttype({ObjType, EntityList});
-enreach_enttype({ObjType, Event}) when ObjType =:= "service", is_record(Event, event) =:= true ->
-	% Find Entity to change
-	[ {_Id, Entity} | _T ] = ets:lookup(entid, Event#event.evtid),
-	% Allocate Organization
-	SvcAllocated = allocate_enttype({Event#event.node, Entity#entity.service}),
-	% Update Entity
-	add_entity( Entity#entity{ service = SvcAllocated }),
-	% Create new event
-	NewEvent = #event{ node = Event#event.node },
-	% Find src entity's
-	Relations = ets:lookup(reldst, Entity#entity.entid),
-	% Snd event to src entity's
-	[ event_in({ObjType, NewEvent#event{ evtid = Src, srcid = Dst }}) || {Dst, Src, _Attr} <- Relations ],
-	ok;
-enreach_enttype({_ObjType, []}) -> ok;
-enreach_enttype({ObjType, [EntityHead | EntityTail]}) when ObjType =:= "organization" ->
+	% Process found EntityList with Type =:= "service"
+	enreach_entity({ObjType, EntityList});
+%-------------------------------------------------------------------------------
+% Process EntityList is null, stop loop
+%-------------------------------------------------------------------------------
+enreach_entity({_ObjType, []}) -> ok;
+%-------------------------------------------------------------------------------
+% Process EntityList with Type =:= "organization"
+%-------------------------------------------------------------------------------
+enreach_entity({ObjType, [EntityHead | EntityTail]}) when ObjType =:= "organization" ->
 	% Parse Entity
 	[EntId, ObjName, ObjList] = EntityHead,
 	% Allocate Organization
@@ -235,8 +222,11 @@ enreach_enttype({ObjType, [EntityHead | EntityTail]}) when ObjType =:= "organiza
 	% Snd event to src entity's
 	[ event_in({ObjType, NewEvent#event{ evtid = Src, srcid = Dst }}) || {Dst, Src, _Attr} <- Relations ],
 	% Loop enreach_organization()			
-	enreach_enttype({ObjType, EntityTail});
-enreach_enttype({ObjType, [EntityHead | EntityTail]}) when ObjType =:= "service" ->
+	enreach_entity({ObjType, EntityTail});
+%-------------------------------------------------------------------------------
+% Process EntityList with Type =:= "service"
+%-------------------------------------------------------------------------------
+enreach_entity({ObjType, [EntityHead | EntityTail]}) when ObjType =:= "service" ->
 	% Parse Entity
 	[EntId, ObjName, ObjList] = EntityHead,
 	% Allocate Organization
@@ -251,8 +241,45 @@ enreach_enttype({ObjType, [EntityHead | EntityTail]}) when ObjType =:= "service"
 	% Snd event to src entity's
 	[ event_in({ObjType, NewEvent#event{ evtid = Src, srcid = Dst }}) || {Dst, Src, _Attr} <- Relations ],
 	% Loop enreach_organization()			
-	enreach_enttype({ObjType, EntityTail});
-enreach_enttype(ObjType) -> io:format("Bad ObjType: ~n", ObjType).
+	enreach_entity({ObjType, EntityTail});
+%-------------------------------------------------------------------------------
+% Process Enreach Entity from Event with Type =:= "organization"
+%-------------------------------------------------------------------------------
+enreach_entity({ObjType, Event}) when ObjType =:= "organization", is_record(Event, event) =:= true ->
+	% Find Entity to change
+	[ {_Id, Entity} | _T ] = ets:lookup(entid, Event#event.evtid),
+	% Allocate Organization
+	OrgAllocated = allocate_enttype({Event#event.node, Entity#entity.organization}),
+	% Update Entity
+	add_entity( Entity#entity{ organization = OrgAllocated }),
+	% Create new event
+	NewEvent = #event{ node = Event#event.node },
+	% Find src entity's
+	Relations = ets:lookup(reldst, Entity#entity.entid),
+	% Snd event to src entity's
+	[ event_in({ObjType, NewEvent#event{ evtid = Src, srcid = Dst }}) || {Dst, Src, _Attr} <- Relations ],
+	ok;
+%-------------------------------------------------------------------------------
+% Process Enreach Entity from Event with Type =:= "service"
+%-------------------------------------------------------------------------------
+enreach_entity({ObjType, Event}) when ObjType =:= "service", is_record(Event, event) =:= true ->
+	% Find Entity to change
+	[ {_Id, Entity} | _T ] = ets:lookup(entid, Event#event.evtid),
+	% Allocate Organization
+	SvcAllocated = allocate_enttype({Event#event.node, Entity#entity.service}),
+	% Update Entity
+	add_entity( Entity#entity{ service = SvcAllocated }),
+	% Create new event
+	NewEvent = #event{ node = Event#event.node },
+	% Find src entity's
+	Relations = ets:lookup(reldst, Entity#entity.entid),
+	% Snd event to src entity's
+	[ event_in({ObjType, NewEvent#event{ evtid = Src, srcid = Dst }}) || {Dst, Src, _Attr} <- Relations ],
+	ok;
+%-------------------------------------------------------------------------------
+% Catch Error
+%-------------------------------------------------------------------------------
+enreach_entity(ObjType) -> io:format("Bad ObjType: ~n", ObjType).
 
 
 allocate_enttype({ObjName, ObjList}) ->
@@ -260,8 +287,6 @@ allocate_enttype({ObjName, ObjList}) ->
 		true	-> ObjList;
 		false	-> [ObjName|ObjList]
 	end.
-% deallocate_enttype({ObjName, ObjList}) ->
-%   		[ Val || Val <- ObjList, ObjName =/= Val ].
 
 
 add_entity(Entity) ->
@@ -372,13 +397,6 @@ rec_event({event, EvtId, AlertKey, Agent, Node, NodeAlias, Summary, Sev, Type, O
 %% To be moved external functions
 %%====================================================================
 
-fill_ets() ->
-    [ entity(Entity)     || Entity   <- get_entity()],
-    [ relation(Relation) || Relation <- get_relation()].
-
-snd_event() ->
-    [ event_out({evtid, Event}) || Event <- get_event()].
-
 get_entity() ->
 	% {entity_id, name, type, severity, service, event_id, events, app_group, organization}
 	% {entity_id, name, type, severity, event_id}
@@ -422,7 +440,7 @@ get_entity() ->
 		{104400, "Обнаружены старые сообщения в очереди App.LNSI.PutBigData.REQUEST", "metric",	-1, 1000371},
 		{104396, "Нет данных мониторинга очередей в течение 10 минут на {HOST.NAME}", "metric",	-1, 1000368},
 		{101224, "s-kssh", "node", -1, 100021},
-		{104334, "Накопление сообщений в очереди App.LNSI.PutBigData.REQUEST", metric, -1, 1000358},
+		{104334, "Накопление сообщений в очереди App.LNSI.PutBigData.REQUEST", "metric", -1, 1000358},
 		{104274, "Накопление сообщений в очереди Adapter.LNSI.PutData.IN", "metric", -1, 1000354}
 	].
 
