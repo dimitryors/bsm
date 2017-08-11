@@ -3,12 +3,12 @@
 %% @end
 %%%-------------------------------------------------------------------
 
--module(bsm_sup).
+-module(worker_sup).
 
 -behaviour(supervisor).
 
 %% API
--export([start_link/0]).
+-export([start_link/0, attach_worker/1, detach_worker/1]).
 
 %% Supervisor callbacks
 -export([init/1]).
@@ -28,11 +28,9 @@ start_link() ->
 
 %% Child :: {Id,StartFunc,Restart,Shutdown,Type,Modules}
 init([]) ->
-    ChildSpecList = [   child(worker_sup, supervisor),
-                        child(bsm_app, worker)
-                    ],
-    SupFlags = #{   strategy    => rest_for_one,
-                    intensity   => 2,
+    ChildSpecList = [],
+    SupFlags = #{   strategy    => one_for_one,
+                    intensity   => 10,
                     period      => 3600
                 },
     {ok, { SupFlags, ChildSpecList} }.
@@ -41,11 +39,20 @@ init([]) ->
 %% Internal functions
 %%====================================================================
 
-child(Module, Type) ->
-    #{  id          => Module,
-        start       => {Module, start_link, []},
-        restart     => permanent,
+attach_worker(Name) ->
+    ChildSpec = child(bsm_worker, Name),
+    supervisor:start_child(?MODULE, ChildSpec).
+
+detach_worker(Name) ->
+    supervisor:terminate_child(?MODULE, Name),
+    supervisor:delete_child(?MODULE, Name).
+
+
+child(Module, Name) ->
+    #{  id          => Name,
+        start       => {Module, start_link, [Name]},
+        restart     => transient,
         shutdown    => 2000,
-        type        => Type,
+        type        => worker,
         modules     => [Module]
     }.

@@ -7,10 +7,13 @@
    [kernel,
     stdlib
    ]},
-  {env,[]},
   {modules, []},
 
   {maintainers, []},
   {licenses, ["Apache 2.0"]},
-  {links, []}
+  {links, []},
+
+  {env,[
+      {bsm_workers, 2}
+  ]}
  ]}.

@@ -14,6 +14,7 @@
 -export([start_link/0, start/2, stop/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 -export([entity/1, relation/1, fill_ets/0, snd_event/0, rec_entity/1, rec_event/1, allocate_event/1, deallocate_event/1, dev/0, event_in/1,  event_out/1]).
+-export([sequence/1]).
 
 -define(SERVER, ?MODULE).
 -record(state, {}).
@@ -31,10 +32,12 @@ start(_StartType, _StartArgs) ->
     bsm_sup:start_link().
 
 init([]) ->
-    entid  = ets:new(entid,  [set, named_table]),
-    evtid  = ets:new(evtid,  [set, named_table]),
-    reldst = ets:new(reldst, [bag, named_table]),
-    relsrc = ets:new(relsrc, [bag, named_table]),
+    entid 	= ets:new(entid,  [set, named_table]),
+    evtid 	= ets:new(evtid,  [set, named_table]),
+    reldst	= ets:new(reldst, [bag, named_table]),
+	relsrc	= ets:new(relsrc, [bag, named_table]),
+	workers = ets:new(workers,  [set, named_table]),
+	start_workers(),
     {ok, #state{}}.
 
 %%--------------------------------------------------------------------
@@ -62,8 +65,8 @@ stop(_State) ->
 %% Internal functions
 %%====================================================================
 
-entity(Entity) 	  -> gen_server:cast(bsm_app, {add_ent, Entity}).
-relation(Relation) -> gen_server:cast(bsm_app, {add_rel, Relation}).
+entity(Entity)		-> gen_server:cast(bsm_app, {add_ent, Entity}).
+relation(Relation)	-> gen_server:cast(bsm_app, {add_rel, Relation}).
 
 event_out({EtsName, Event})	-> gen_server:cast(bsm_app, {direction_out, EtsName, rec_event(Event)}).
 event_in({ObjType}) 		-> gen_server:cast(bsm_app, {direction_in, ObjType});
@@ -73,7 +76,6 @@ event_in({ObjType, Event}) 	-> gen_server:cast(bsm_app, {direction_in, ObjType, 
 handle_call(_Request, _From, State) ->
     Reply = ok,
     {reply, Reply, State}.
-
 
 handle_cast({add_ent, Entity}, State) ->
 	add_entity(Entity),
@@ -101,6 +103,31 @@ terminate(_Reason, _State) ->
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
+
+
+%-------------------------------------------------------------------------------
+% Start bsm workers
+%-------------------------------------------------------------------------------
+start_workers() ->
+	% Get Env property bsm_workers
+	{ok, WorkersNum} = application:get_env(bsm, bsm_workers),
+	% Generate Workers Sequence List
+	WorkersList = sequence({WorkersNum}),
+	% Start workers
+	[ run_worker(WorkerNum) || WorkerNum <- WorkersList ].
+
+% Sequence from Number
+sequence({N})					 -> sequence({ N, [] });
+sequence({N, []})				 -> sequence({ N-1, [N-1] });
+sequence({N, List}) when N > 0	 -> sequence({ N-1, [ N-1 | List ] });
+sequence({N, List}) when N =:= 0 -> List.
+
+% Register worker
+run_worker(WorkerNum) ->
+	WorkerName = list_to_atom( "worker" ++ integer_to_list(WorkerNum) ),
+	{ok, _Pid} = worker_sup:attach_worker( WorkerName ),
+	ets:insert( workers, {WorkerNum,  WorkerName} ),
+	{ok, WorkerName}.
 
 %-------------------------------------------------------------------------------
 % Calculate current Entity State and send event with changes next related entity
