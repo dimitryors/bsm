@@ -27,7 +27,7 @@ start_link() ->
     gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
 
 start(_StartType, _StartArgs) ->
-    gen_server:start_link({local, ?SERVER}, ?MODULE, [], []),
+    %%gen_server:start_link({local, ?SERVER}, ?MODULE, [], []),
     bsm_sup:start_link().
 
 init([]) ->
@@ -39,7 +39,7 @@ init([]) ->
 
 %%--------------------------------------------------------------------
 dev() ->
-   start_link(),
+   %%start_link(),
    fill_ets(),
    sys:trace(bsm_app, true),
    event_in({"organization"}),

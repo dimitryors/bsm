@@ -28,8 +28,22 @@ start_link() ->
 
 %% Child :: {Id,StartFunc,Restart,Shutdown,Type,Modules}
 init([]) ->
-    {ok, { {one_for_all, 0, 1}, []} }.
+    ChildSpecList = [child(bsm_app)],
+    SupFlags = #{   strategy    => rest_for_one,
+                    intensity   => 2,
+                    period      => 3600
+                },
+    {ok, { SupFlags, ChildSpecList} }.
 
 %%====================================================================
 %% Internal functions
 %%====================================================================
+
+child(Module) ->
+    #{  id          => Module,
+        start       => {Module, start_link, []},
+        restart     => permanent,
+        shutdown    => 2000,
+        type        => worker,
+        modules     => [Module]
+    }.
