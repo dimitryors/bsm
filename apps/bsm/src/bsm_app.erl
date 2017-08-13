@@ -14,7 +14,7 @@
 -export([start_link/0, start/2, stop/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 -export([entity/1, relation/1, fill_ets/0, snd_event/0, rec_entity/1, rec_event/1, allocate_event/1, deallocate_event/1, dev/0, event_in/1,  event_out/1]).
--export([sequence/1]).
+-export([sequence/1, event_worker_out/1]).
 
 -define(SERVER, ?MODULE).
 -record(state, {}).
@@ -68,9 +68,17 @@ stop(_State) ->
 entity(Entity)		-> gen_server:cast(bsm_app, {add_ent, Entity}).
 relation(Relation)	-> gen_server:cast(bsm_app, {add_rel, Relation}).
 
+event_worker_out({EtsName, Event})	->
+	Rec = rec_event(Event),
+	{ok, WorkersNum} = application:get_env(bsm, bsm_workers), % переделать, чтобы источником была сама ets таблица
+	HashNum = Rec#event.evtid rem WorkersNum,
+	[{_,Worker}] = ets:lookup(workers, HashNum),
+	gen_server:cast(Worker, {direction_out, EtsName, Rec#event{}}).
+
 event_out({EtsName, Event})	-> gen_server:cast(bsm_app, {direction_out, EtsName, rec_event(Event)}).
 event_in({ObjType}) 		-> gen_server:cast(bsm_app, {direction_in, ObjType});
 event_in({ObjType, Event}) 	-> gen_server:cast(bsm_app, {direction_in, ObjType, Event}).
+
 
 
 handle_call(_Request, _From, State) ->

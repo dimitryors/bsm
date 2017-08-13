@@ -41,6 +41,10 @@ handle_call(_Request, _From, State) ->
     Reply = ok,
     {reply, Reply, State}.
 
+handle_cast({direction_out, EtsName, Rec}, State) ->
+	% io:format("~p~n", self()),
+    calc_entity_state({EtsName, Rec}),
+    {noreply, State};
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
